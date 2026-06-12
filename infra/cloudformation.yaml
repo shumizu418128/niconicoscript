@@ -1,0 +1,212 @@
+# niconicoscript — Lambda Web Adapter + DynamoDB
+#
+# デプロイ手順:
+# 1. スタック初回作成（ECR / DynamoDB / IAM のみ）
+#    aws cloudformation deploy \
+#      --template-file infra/cloudformation.yaml \
+#      --stack-name niconicoscript \
+#      --capabilities CAPABILITY_NAMED_IAM \
+#      --parameter-overrides BootstrapOnly=true
+# 2. ECR にイメージを push（Outputs の EcrRepositoryUri を使用）
+#    aws ecr get-login-password --region <region> | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
+#    docker build -t niconicoscript .
+#    docker tag niconicoscript:latest <EcrRepositoryUri>:latest
+#    docker push <EcrRepositoryUri>:latest
+# 3. Lambda と API Gateway HTTP API をデプロイ
+#    aws cloudformation deploy \
+#      --template-file infra/cloudformation.yaml \
+#      --stack-name niconicoscript \
+#      --capabilities CAPABILITY_NAMED_IAM \
+#      --parameter-overrides BootstrapOnly=false ImageUri=<EcrRepositoryUri>:latest
+#
+# 本番では CommentsTable に DeletionPolicy: Retain を付与することを推奨。
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ニコ生風のコメント表示 テスト
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: niconicoscript
+    Description: Resource name prefix
+  BootstrapOnly:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: true のとき ECR / DynamoDB / IAM のみ作成（初回の骨格用）
+  ImageUri:
+    Type: String
+    Default: ''
+    Description: ECR image URI（BootstrapOnly=false のとき必須）
+  LambdaMemorySize:
+    Type: Number
+    Default: 512
+    MinValue: 128
+    MaxValue: 10240
+  LambdaTimeout:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 900
+
+Conditions:
+  DeployApplication: !Equals [!Ref BootstrapOnly, 'false']
+
+Resources:
+  CommentsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-comments'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: commentId
+          AttributeType: N
+        - AttributeName: scope
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: N
+        - AttributeName: pendingKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: commentId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: ByCreatedAt
+          KeySchema:
+            - AttributeName: scope
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: PendingComments
+          KeySchema:
+            - AttributeName: pendingKey
+              KeyType: HASH
+            - AttributeName: commentId
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  EcrRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref ProjectName
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      EmptyOnDelete: true
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDbCommentsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt CommentsTable.Arn
+                  - !Sub '${CommentsTable.Arn}/index/*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Condition: DeployApplication
+    Properties:
+      FunctionName: !Ref ProjectName
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      Role: !GetAtt LambdaExecutionRole.Arn
+      MemorySize: !Ref LambdaMemorySize
+      Timeout: !Ref LambdaTimeout
+      Environment:
+        Variables:
+          PORT: '3000'
+          COMMENTS_TABLE_NAME: !Ref CommentsTable
+      Architectures:
+        - x86_64
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Condition: DeployApplication
+    Properties:
+      Name: !Sub '${ProjectName}-http-api'
+      ProtocolType: HTTP
+      Description: Public HTTP API for niconicoscript
+
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Condition: DeployApplication
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub >-
+        arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFunction.Arn}/invocations
+      PayloadFormatVersion: '2.0'
+
+  HttpApiDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: DeployApplication
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: $default
+      Target: !Sub integrations/${HttpApiIntegration}
+
+  HttpApiProxyRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Condition: DeployApplication
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: ANY /{proxy+}
+      Target: !Sub integrations/${HttpApiIntegration}
+
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Condition: DeployApplication
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+
+  HttpApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Condition: DeployApplication
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*
+
+Outputs:
+  ApiUrl:
+    Condition: DeployApplication
+    Description: Public API Gateway HTTP API endpoint
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com
+  EcrRepositoryUri:
+    Description: Push container images here before updating ImageUri
+    Value: !GetAtt EcrRepository.RepositoryUri
+  CommentsTableName:
+    Description: DynamoDB table for comments
+    Value: !Ref CommentsTable
+  LambdaFunctionName:
+    Condition: DeployApplication
+    Description: Lambda function name
+    Value: !Ref LambdaFunction
