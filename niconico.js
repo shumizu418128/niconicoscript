@@ -6,7 +6,7 @@ if (!NicoJS) {
 const NICO_OPTIONS = {
   app: document.getElementById('app'),
   width: 1920,
-  height: 1080,
+  height: 100,
   font_size: 60,
   color: '#fff',
   speed: 6,
