@@ -3,20 +3,88 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>nicoJS</title>
+  <title>ライブ表示 — nicoJS</title>
   <style>
     body {
       margin: 24px;
-      background: transparent;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      font-family: system-ui, sans-serif;
     }
-    #app {
-      background: transparent;
+    #comment-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 960px;
+    }
+    .comment-item {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 16px;
+      align-items: start;
+      padding: 16px;
+      border: 1px solid #404040;
+      border-radius: 8px;
+      background: #2a2a2a;
+      animation: comment-fade-in 0.2s ease-out;
+    }
+    @keyframes comment-fade-in {
+      from {
+        opacity: 0;
+        transform: translateY(-6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .comment-time {
+      font-size: 13px;
+      color: #a0a0a0;
+      font-family: ui-monospace, monospace;
+    }
+    .comment-text {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    #empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      padding: 32px 0;
+    }
+    #qrcode {
+      width: 220px;
+      height: 220px;
+      padding: 12px;
+      background: #ffffff;
+      border-radius: 8px;
+    }
+    #qrcode svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #empty-state p {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 600;
     }
   </style>
 </head>
 <body>
-  <div id="app"></div>
-  <script src="node_modules/nicojs/lib/nico.js"></script>
+  <div id="empty-state">
+    <div id="qrcode"></div>
+    <p>コメントしてね</p>
+  </div>
+  <ul id="comment-list"></ul>
+  <script src="node_modules/qrcode-generator/dist/qrcode.js"></script>
   <script src="niconico.js"></script>
 </body>
 </html>

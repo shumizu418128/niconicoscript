@@ -131,7 +131,7 @@ const resolveStaticPath = (pathname) => {
     ['/history.js', path.join(ROOT, 'history.js')],
     ['/history-all.js', path.join(ROOT, 'history-all.js')],
     ['/niconico.js', path.join(ROOT, 'niconico.js')],
-    ['/node_modules/nicojs/lib/nico.js', path.join(ROOT, 'node_modules', 'nicojs', 'lib', 'nico.js')],
+    ['/node_modules/qrcode-generator/dist/qrcode.js', path.join(ROOT, 'node_modules', 'qrcode-generator', 'dist', 'qrcode.js')],
   ])
   const abs = map.get(pathname)
   if (!abs) {

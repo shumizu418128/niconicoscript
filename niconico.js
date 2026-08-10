@@ -1,74 +1,99 @@
-const NicoJS = typeof nicoJS !== 'undefined' ? nicoJS : null
-if (!NicoJS) {
-  throw new Error('nicoJS が読み込まれていません。/view から開くか、先に nico.js を読み込んでください。')
+'use strict'
+
+const listEl = document.getElementById('comment-list')
+const emptyStateEl = document.getElementById('empty-state')
+const qrcodeEl = document.getElementById('qrcode')
+if (!listEl || !emptyStateEl || !qrcodeEl) {
+  throw new Error('#comment-list / #empty-state / #qrcode が見つかりません。/view から開いてください。')
 }
 
-const NICO_OPTIONS = {
-  app: document.getElementById('app'),
-  width: 1920,
-  height: 100,
-  font_size: 60,
-  color: '#fff',
-  speed: 6,
-}
-
-/** コメント文字の 1px 輪郭（nicoJS 既定のぼかし影を上書き）。 */
-const COMMENT_OUTLINE_SHADOW =
-  '1px 0 0 #000, -1px 0 0 #000, 0 1px 0 #000, 0 -1px 0 #000'
-
+/** リストに保持する最大件数。超えた分は古い項目から間引く。 */
+const MAX_ITEMS = 30
 const POLL_MS = 500
+/** QR コードの誤り訂正レベル（'L' | 'M' | 'Q' | 'H'）。 */
+const QR_ERROR_CORRECTION_LEVEL = 'M'
 
 /**
- * send 直後に最後のコメント要素へ輪郭用 textShadow を付与する。
- *
- * @param {object} nico nicoJS インスタンス。
+ * コメント投稿ページ（ルート URL）を指す QR コードを SVG で描画する。
+ * ホストは実行時の location から動的に取得するため、ローカル／本番のどちらでも正しい URL になる。
  */
-const patchSendWithOutline = (nico) => {
-  const sendOriginal = nico.send.bind(nico)
-  nico.send = (text, color) => {
-    sendOriginal(text, color)
-    const last = nico.comments[nico.comments.length - 1]
-    if (last?.ele) {
-      last.ele.style.textShadow = COMMENT_OUTLINE_SHADOW
-    }
-  }
+const renderQrCode = () => {
+  const postUrl = `${location.origin}/`
+  const qr = qrcode(0, QR_ERROR_CORRECTION_LEVEL)
+  qr.addData(postUrl)
+  qr.make()
+  qrcodeEl.innerHTML = qr.createSvgTag({ scalable: true })
 }
 
-const nico = new NicoJS(NICO_OPTIONS)
-patchSendWithOutline(nico)
-nico.listen()
+/**
+ * コメントの有無に応じて QR コード（空状態）とリストの表示を切り替える。
+ */
+const syncEmptyState = () => {
+  emptyStateEl.style.display = listEl.children.length === 0 ? '' : 'none'
+}
 
-/** Lambda 相当のキューから未配信分を取得し nicoJS で流す（サーバは返却後に破棄）。 */
+renderQrCode()
+syncEmptyState()
+
+/**
+ * epoch ms を時刻文字列に変換する。
+ *
+ * @param {number} createdAt 投稿時刻（epoch ms）。
+ * @returns {string}
+ */
+const formatTime = (createdAt) => {
+  if (typeof createdAt !== 'number' || Number.isNaN(createdAt)) {
+    return '--:--:--'
+  }
+  return new Date(createdAt).toLocaleTimeString('ja-JP', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
+
+/**
+ * コメント 1 件の DOM を生成する。
+ *
+ * @param {{ text?: string, createdAt?: number }} comment コメント。
+ * @returns {HTMLLIElement}
+ */
+const renderCommentItem = (comment) => {
+  const item = document.createElement('li')
+  item.className = 'comment-item'
+
+  const timeEl = document.createElement('div')
+  timeEl.className = 'comment-time'
+  timeEl.textContent = formatTime(comment.createdAt)
+
+  const textEl = document.createElement('p')
+  textEl.className = 'comment-text'
+  textEl.textContent = typeof comment.text === 'string' ? comment.text : ''
+
+  item.append(timeEl, textEl)
+  return item
+}
+
+/**
+ * コメントをリスト先頭に追加し、上限を超えた古い項目を末尾から間引く。
+ *
+ * @param {{ text?: string, createdAt?: number }} comment コメント。
+ */
+const addCommentToList = (comment) => {
+  listEl.prepend(renderCommentItem(comment))
+  while (listEl.children.length > MAX_ITEMS) {
+    listEl.lastElementChild.remove()
+  }
+  syncEmptyState()
+}
+
+/** Lambda 相当のキューから未配信分を取得しリストに追加する（サーバは返却後に破棄）。 */
 let lastCommentId = 0
 /** 前回の fetch が終わる前に次を走らせない（重複 GET で取りこぼしやすい）。 */
 let pollInFlight = false
 
 /**
- * API 1件を nicoJS に流す。
- *
- * @param {{ id?: number, text?: string, color?: string }} c コメント。
- * @param {number} maxSeen これまでに見た最大 id。
- * @returns {number} 更新後の maxSeen。
- */
-const playComment = (c, maxSeen) => {
-  if (typeof c.id === 'number') {
-    maxSeen = Math.max(maxSeen, c.id)
-  }
-  const text = typeof c.text === 'string' ? c.text : ''
-  if (!text) {
-    return maxSeen
-  }
-  const color = typeof c.color === 'string' ? c.color : undefined
-  try {
-    nico.send(text, color)
-  } catch (sendErr) {
-    console.error('nico.send failed', sendErr)
-  }
-  return maxSeen
-}
-
-/**
- * 未配信コメントを取得し nicoJS で送信する（同一コメントの再取得はサーバ側で抑止）。
+ * 未配信コメントを取得しリストへ追加する（同一コメントの再取得はサーバ側で抑止）。
  *
  * @returns {Promise<void>}
  */
@@ -84,11 +109,14 @@ const pollComments = async () => {
     }
     const data = await res.json()
     const list = Array.isArray(data.comments) ? data.comments : []
-    let maxSeen = lastCommentId
     for (const c of list) {
-      maxSeen = playComment(c, maxSeen)
+      if (typeof c.id === 'number') {
+        lastCommentId = Math.max(lastCommentId, c.id)
+      }
+      if (typeof c.text === 'string' && c.text) {
+        addCommentToList(c)
+      }
     }
-    lastCommentId = Math.max(lastCommentId, maxSeen)
   } catch (err) {
     console.error('pollComments failed', err)
   } finally {
